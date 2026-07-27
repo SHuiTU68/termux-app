@@ -3,12 +3,13 @@ name: Build
 # Unified Termux CI/CD workflow.
 #
 # Consolidates the previous separate workflows (debug_build, run_tests,
-# gradle-wrapper-validation, dependency-submission, attach_debug_apks_to_release,
-# trigger_library_builds_on_jitpack) into a single file.
+# gradle-wrapper-validation, attach_debug_apks_to_release,
+# trigger_library_builds_on_jitpack) into a single file. The former
+# dependency-submission job is intentionally dropped because it requires the
+# "Dependency graph" repository feature, which is not enabled on this fork.
 #
 # Triggers:
-#   - push to master              -> validate, test, build APKs, upload artifacts,
-#                                    submit dependency graph
+#   - push to master              -> validate, test, build APKs, upload artifacts
 #   - pull request against master -> validate, test, build APKs, upload artifacts
 #   - release published           -> build APKs, attach to the GitHub release,
 #                                    trigger JitPack library builds
@@ -60,21 +61,6 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - name: Execute tests
         run: ./gradlew test
-
-  # ---------------------------------------------------------------------
-  # Submit the Gradle dependency graph to GitHub (push to master only).
-  # ---------------------------------------------------------------------
-  dependency-submission:
-    name: Submit dependency graph
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: 17
-      - uses: gradle/actions/dependency-submission@v4
 
   # ---------------------------------------------------------------------
   # Build debug APKs for push / PR / manual runs and upload as artifacts.
