@@ -61,6 +61,11 @@ public class TermuxApplication extends Application {
 
             // Setup termux-am-socket server
             TermuxAmSocketServer.setupTermuxAmSocketServer(context);
+
+            // Install/refresh bundled helper scripts (e.g. the `shizuku` wrapper)
+            // into $PREFIX/bin so they are available to the user's shell. This runs
+            // on every app start to keep them up to date for existing installs too.
+            TermuxInstaller.installBundledScripts(context);
         } else {
             Logger.logErrorExtended(LOG_TAG, "Termux files directory is not accessible\n" + error);
         }

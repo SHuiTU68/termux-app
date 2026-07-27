@@ -36,6 +36,12 @@ android {
         implementation "io.noties.markwon:recycler:$markwonVersion"
         implementation 'com.google.guava:listenablefuture:9999.0-empty-to-avoid-conflict-with-guava'
 
+        // Shizuku integration: API client and ContentProvider used to receive the
+        // binder from a running Shizuku server (root or adb). The bundled `shizuku`
+        // command in $PREFIX/bin talks to the server through these APIs.
+        implementation "dev.rikka.shizuku:api:13.1.5"
+        implementation "dev.rikka.shizuku:provider:13.1.5"
+
         implementation project(":terminal-view")
         implementation project(":termux-shared")
     }
@@ -43,8 +49,8 @@ android {
     defaultConfig {
         minSdkVersion project.properties.minSdkVersion.toInteger()
         targetSdkVersion project.properties.targetSdkVersion.toInteger()
-        versionCode 118
-        versionName "0.118.0"
+        versionCode 119
+        versionName "0.118.1"
 
         if (appVersionName) versionName = appVersionName
         validateVersionName(versionName)

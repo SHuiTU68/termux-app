@@ -37,6 +37,11 @@
     <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS" tools:ignore="ProtectedPermissions" />
     <uses-permission android:name="com.android.alarm.permission.SET_ALARM" />
 
+    <!-- Required to interact with a running Shizuku server (declared by the
+         Shizuku manager app, protectionLevel=dangerous). Granted at runtime
+         through Shizuku.requestPermission(). -->
+    <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
+
     <application
         android:name=".app.TermuxApplication"
         android:allowBackup="false"
@@ -174,6 +179,19 @@
             android:exported="true"
             android:grantUriPermissions="true"
             android:permission="${TERMUX_PACKAGE_NAME}.permission.RUN_COMMAND" />
+
+        <!-- Shizuku ContentProvider. The Shizuku server (running as root or shell)
+             pushes its binder into Termux through this provider when Termux starts.
+             android:permission must be a permission the Shizuku server holds but
+             ordinary apps do not (INTERACT_ACROSS_USERS_FULL is held by shell).
+             exported=true and multiprocess=false are required by ShizukuProvider. -->
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${TERMUX_PACKAGE_NAME}.shizuku"
+            android:enabled="true"
+            android:exported="true"
+            android:multiprocess="false"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
 
 
         <receiver

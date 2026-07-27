@@ -1,0 +1,34 @@
+#!/data/data/com.termux/files/usr/bin/sh
+# shizuku - Built-in Shizuku integration for Termux.
+#
+# This wrapper launches com.termux.app.shizuku.ShizukuCli via app_process,
+# using the Termux APK itself as the classpath. The Shizuku API client and
+# AIDL stubs compiled into the Termux APK are then available to the CLI,
+# which talks to a running Shizuku server through the standard rish-style
+# broadcast binder handshake.
+#
+# Installed into $PREFIX/bin/shizuku by TermuxInstaller on first bootstrap.
+
+TERMUX_PACKAGE="com.termux"
+CLI_CLASS="com.termux.app.shizuku.ShizukuCli"
+
+# Locate the Termux base APK path. `pm path` prints one or more lines of
+# the form "package:/data/app/.../base.apk"; we only need the first (base)
+# APK since dex classes live there.
+APK_PATH=""
+if command -v pm >/dev/null 2>&1; then
+    APK_PATH=$(pm path "$TERMUX_PACKAGE" 2>/dev/null | head -n1 | sed 's/^package://')
+fi
+if [ -z "$APK_PATH" ]; then
+    APK_PATH=$(/system/bin/pm path "$TERMUX_PACKAGE" 2>/dev/null | head -n1 | sed 's/^package://')
+fi
+if [ -z "$APK_PATH" ]; then
+    echo "shizuku: cannot locate Termux APK path (is Termux installed?)" >&2
+    exit 1
+fi
+
+exec /system/bin/app_process \
+    -Djava.class.path="$APK_PATH" \
+    /system/bin \
+    --nice-name=shizuku_cli \
+    "$CLI_CLASS" "$@"

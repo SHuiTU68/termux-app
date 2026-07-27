@@ -25,8 +25,10 @@ import com.termux.shared.termux.shell.command.environment.TermuxShellEnvironment
 
 import java.io.BufferedReader;
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.util.ArrayList;
 import java.util.List;
@@ -218,6 +220,11 @@ final class TermuxInstaller {
 
                     Logger.logInfo(LOG_TAG, "Bootstrap packages installed successfully.");
 
+                    // Install/refresh bundled helper scripts (e.g. the `shizuku` wrapper
+                    // that ships inside the APK assets) so they are available in
+                    // $PREFIX/bin right after bootstrap extraction.
+                    installBundledScripts(activity);
+
                     // Recreate env file since termux prefix was wiped earlier
                     TermuxShellEnvironment.writeEnvironmentToFile(activity);
 
@@ -373,6 +380,89 @@ final class TermuxInstaller {
 
     private static Error ensureDirectoryExists(File directory) {
         return FileUtils.createDirectoryFile(directory.getAbsolutePath());
+    }
+
+    /**
+     * Install bundled helper scripts shipped in the APK {@code assets/} directory
+     * into {@code $PREFIX/bin/}. Currently this installs the {@code shizuku} wrapper
+     * that launches {@link com.termux.app.shizuku.ShizukuCli} via {@code app_process}.
+     *
+     * <p>Safe to call repeatedly: the script is rewritten only when its content
+     * differs from the bundled asset, and is always re-chmodded to 0700. Called
+     * both after bootstrap extraction and from {@link TermuxApplication#onCreate()}
+     * so that existing installs also receive the script on the next app start.
+     */
+    static void installBundledScripts(final Context context) {
+        installBundledScript(context, "shizuku", "shizuku");
+    }
+
+    private static void installBundledScript(final Context context, final String assetName, final String binName) {
+        final String logTag = "TermuxInstaller";
+        File binDir = TermuxConstants.TERMUX_BIN_PREFIX_DIR;
+        if (!binDir.isDirectory()) {
+            // Prefix not set up yet (e.g. called before bootstrap extraction).
+            // Will be installed after bootstrap extraction succeeds.
+            return;
+        }
+        File target = new File(binDir, binName);
+        String assetText;
+        try {
+            assetText = readAssetText(context, assetName);
+        } catch (Exception e) {
+            Logger.logError(logTag, "Failed to read bundled script asset '" + assetName + "': " + e.getMessage());
+            return;
+        }
+        if (assetText == null) {
+            Logger.logError(logTag, "Bundled script asset missing: " + assetName);
+            return;
+        }
+        String existing = null;
+        if (target.isFile()) {
+            try {
+                existing = readFileText(target);
+            } catch (Exception ignored) {
+            }
+        }
+        try {
+            if (existing == null || !existing.equals(assetText)) {
+                try (InputStream in = context.getAssets().open(assetName);
+                     FileOutputStream out = new FileOutputStream(target)) {
+                    byte[] buf = new byte[4096];
+                    int n;
+                    while ((n = in.read(buf)) != -1) {
+                        out.write(buf, 0, n);
+                    }
+                }
+                Logger.logInfo(logTag, "Installed bundled script '" + binName + "' to " + target.getAbsolutePath());
+            }
+            // Always (re)assert executable permissions in case they were lost.
+            //noinspection OctalInteger
+            Os.chmod(target.getAbsolutePath(), 0700);
+        } catch (Exception e) {
+            Logger.logError(logTag, "Failed to install bundled script '" + binName + "': " + e.getMessage());
+        }
+    }
+
+    private static String readAssetText(Context context, String assetName) throws Exception {
+        try (InputStream in = context.getAssets().open(assetName)) {
+            return readAll(in);
+        }
+    }
+
+    private static String readFileText(File file) throws Exception {
+        try (InputStream in = new java.io.FileInputStream(file)) {
+            return readAll(in);
+        }
+    }
+
+    private static String readAll(InputStream in) throws Exception {
+        ByteArrayOutputStream bos = new ByteArrayOutputStream();
+        byte[] buf = new byte[4096];
+        int n;
+        while ((n = in.read(buf)) != -1) {
+            bos.write(buf, 0, n);
+        }
+        return bos.toString("UTF-8");
     }
 
     public static byte[] loadZipBytes() {
