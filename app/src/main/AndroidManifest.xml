@@ -5,14 +5,14 @@
     android:sharedUserId="${TERMUX_PACKAGE_NAME}"
     android:sharedUserLabel="@string/shared_user_label">
 
-    <!-- Shizuku's api (minSdk 24) and provider (minSdk 23) libraries declare
-         higher minSdk than Termux (Android 5.0 / API 21). The Shizuku
+    <!-- Shizuku's libraries (shared minSdk 23, api minSdk 24, provider minSdk 23)
+         declare higher minSdk than Termux (Android 5.0 / API 21). The Shizuku
          integration is strictly opt-in: it is only exercised when the user
          runs the bundled `shizuku` CLI, and ShizukuCli degrades gracefully
          (prints an error and exits) on devices too old to run a Shizuku
-         server. Override both libraries so the manifest merger accepts them;
-         the actual minSdkVersion still comes from build.gradle. -->
-    <uses-sdk tools:overrideLibrary="rikka.shizuku.provider,rikka.shizuku.api" />
+         server. Override all three Shizuku modules so the manifest merger
+         accepts them; the actual minSdkVersion still comes from build.gradle. -->
+    <uses-sdk tools:overrideLibrary="rikka.shizuku.shared,rikka.shizuku.api,rikka.shizuku.provider" />
 
     <uses-feature
         android:name="android.hardware.touchscreen"
