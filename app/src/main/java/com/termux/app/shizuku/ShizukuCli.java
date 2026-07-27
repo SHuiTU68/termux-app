@@ -79,17 +79,39 @@ public final class ShizukuCli {
     }
 
     public static void main(String[] args) {
-        try {
-            Looper.prepareMainLooper();
-            int exit = run(args);
-            System.out.flush();
-            System.err.flush();
-            System.exit(exit);
-        } catch (Throwable t) {
-            t.printStackTrace(System.err);
-            System.err.flush();
-            System.exit(EXIT_ERROR);
-        }
+        // Prepare the main Looper and then enter Looper.loop() on the main
+        // thread. The command logic runs in a worker thread; sendBroadcast()
+        // (used by requestBinder()) may post work onto the main thread's
+        // message queue, so the Looper must actually be running — otherwise
+        // the framework can abort the process with SIGABRT ("Aborted"). When
+        // the worker finishes it quits the main Looper, which lets loop()
+        // return and the process to exit cleanly.
+        Looper.prepareMainLooper();
+
+        final String[] cmdArgs = args;
+        final AtomicReference<Integer> exitRef = new AtomicReference<>(EXIT_ERROR);
+
+        Thread worker = new Thread(() -> {
+            try {
+                exitRef.set(run(cmdArgs));
+            } catch (Throwable t) {
+                t.printStackTrace(System.err);
+                exitRef.set(EXIT_ERROR);
+            } finally {
+                // Quit the main Looper so Looper.loop() returns and we can exit.
+                Looper.getMainLooper().quit();
+            }
+        }, "shizuku-cmd");
+        worker.setDaemon(true);
+        worker.start();
+
+        // Process messages on the main thread until the worker quits the Looper.
+        Looper.loop();
+
+        // loop() has returned; flush and exit.
+        System.out.flush();
+        System.err.flush();
+        System.exit(exitRef.get());
     }
 
     private static int run(String[] args) throws Exception {

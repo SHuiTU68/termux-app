@@ -27,8 +27,13 @@ if [ -z "$APK_PATH" ]; then
     exit 1
 fi
 
-exec /system/bin/app_process \
-    -Djava.class.path="$APK_PATH" \
-    /system/bin \
-    --nice-name=shizuku_cli \
-    "$CLI_CLASS" "$@"
+# Use the CLASSPATH environment variable (same approach as the official rish
+# wrapper) instead of -Djava.class.path. app_process reads CLASSPATH to set
+# up the PathClassLoader over the APK's dex files; the -D option is less
+# reliable for multidex APKs and can cause native aborts during class loading.
+export CLASSPATH="$APK_PATH"
+
+# The second argument ("/") is the bind-mount base directory expected by
+# app_process; rish uses the same value. --nice-name is omitted because it
+# is cosmetic and some Android versions reject underscores in it.
+exec /system/bin/app_process / "$CLI_CLASS" "$@"
