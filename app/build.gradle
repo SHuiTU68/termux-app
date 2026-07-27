@@ -77,7 +77,10 @@ android {
                 enable ((gradle.startParameter.taskNames.any { it.contains("Debug") } && splitAPKsForDebugBuilds == "1") ||
                     (gradle.startParameter.taskNames.any { it.contains("Release") } && splitAPKsForReleaseBuilds == "1"))
                 reset ()
-                include 'x86', 'x86_64', 'armeabi-v7a', 'arm64-v8a'
+                // Only build ARMv7 (armeabi-v7a) and ARMv8 (arm64-v8a) ABIs. x86 / x86_64
+                // emulators are not targeted; users on Intel tablets can fall back to the
+                // universal APK which bundles both ARM ABIs.
+                include 'armeabi-v7a', 'arm64-v8a'
                 universalApk true
             }
         }

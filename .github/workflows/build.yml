@@ -1,0 +1,286 @@
+name: Build
+
+# Unified Termux CI/CD workflow.
+#
+# Consolidates the previous separate workflows (debug_build, run_tests,
+# gradle-wrapper-validation, dependency-submission, attach_debug_apks_to_release,
+# trigger_library_builds_on_jitpack) into a single file.
+#
+# Triggers:
+#   - push to master              -> validate, test, build APKs, upload artifacts,
+#                                    submit dependency graph
+#   - pull request against master -> validate, test, build APKs, upload artifacts
+#   - release published           -> build APKs, attach to the GitHub release,
+#                                    trigger JitPack library builds
+#   - workflow_dispatch           -> manual run (validate + test + build)
+#
+# Only ARM ABIs are built (armeabi-v7a + arm64-v8a) plus a universal APK
+# bundling both, matching the splits.abi.include list in app/build.gradle.
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+  release:
+    types:
+      - published
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  # ---------------------------------------------------------------------
+  # Gradle wrapper jar integrity check (push / PR / manual only).
+  # ---------------------------------------------------------------------
+  validate-wrapper:
+    name: Validate Gradle Wrapper
+    runs-on: ubuntu-latest
+    if: github.event_name != 'release'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: gradle/actions/wrapper-validation@v4
+
+  # ---------------------------------------------------------------------
+  # Unit tests (push / PR / manual only).
+  # ---------------------------------------------------------------------
+  test:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    if: github.event_name != 'release'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Execute tests
+        run: ./gradlew test
+
+  # ---------------------------------------------------------------------
+  # Submit the Gradle dependency graph to GitHub (push to master only).
+  # ---------------------------------------------------------------------
+  dependency-submission:
+    name: Submit dependency graph
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: 17
+      - uses: gradle/actions/dependency-submission@v4
+
+  # ---------------------------------------------------------------------
+  # Build debug APKs for push / PR / manual runs and upload as artifacts.
+  # ---------------------------------------------------------------------
+  build-debug:
+    name: Build debug APKs (${{ matrix.package_variant }})
+    needs: [validate-wrapper, test]
+    if: github.event_name != 'release'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package_variant: [ apt-android-7, apt-android-5 ]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Build APKs
+        shell: bash {0}
+        env:
+          PACKAGE_VARIANT: ${{ matrix.package_variant }}
+        run: |
+          exit_on_error() { echo "$1"; exit 1; }
+
+          echo "Setting vars"
+
+          if [ "$GITHUB_EVENT_NAME" == "pull_request" ]; then
+              GITHUB_SHA="${{ github.event.pull_request.head.sha }}"
+          fi
+
+          # Set RELEASE_VERSION_NAME to "<CURRENT_VERSION_NAME>+<last_commit_hash>"
+          CURRENT_VERSION_NAME_REGEX='\s+versionName "([^"]+)"$'
+          CURRENT_VERSION_NAME="$(grep -m 1 -E "$CURRENT_VERSION_NAME_REGEX" ./app/build.gradle | sed -r "s/$CURRENT_VERSION_NAME_REGEX/\1/")"
+          RELEASE_VERSION_NAME="v$CURRENT_VERSION_NAME+${GITHUB_SHA:0:7}"
+          if ! printf "%s" "${RELEASE_VERSION_NAME/v/}" | grep -qP '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$'; then
+           exit_on_error "The versionName '${RELEASE_VERSION_NAME/v/}' is not a valid version as per semantic version '2.0.0' spec in the format 'major.minor.patch(-prerelease)(+buildmetadata)'. https://semver.org/spec/v2.0.0.html."
+          fi
+
+          APK_DIR_PATH="./app/build/outputs/apk/debug"
+          APK_VERSION_TAG="$RELEASE_VERSION_NAME-${{ env.PACKAGE_VARIANT }}-github-debug"
+          APK_BASENAME_PREFIX="termux-app_$APK_VERSION_TAG"
+
+          echo "APK_DIR_PATH=$APK_DIR_PATH" >> $GITHUB_ENV
+          echo "APK_VERSION_TAG=$APK_VERSION_TAG" >> $GITHUB_ENV
+          echo "APK_BASENAME_PREFIX=$APK_BASENAME_PREFIX" >> $GITHUB_ENV
+
+          echo "Building APKs for '$APK_VERSION_TAG' build"
+          export TERMUX_APP_VERSION_NAME="${RELEASE_VERSION_NAME/v/}"
+          export TERMUX_APK_VERSION_TAG="$APK_VERSION_TAG"
+          export TERMUX_PACKAGE_VARIANT="${{ env.PACKAGE_VARIANT }}"
+          if ! ./gradlew assembleDebug; then
+            exit_on_error "Build failed for '$APK_VERSION_TAG' build."
+          fi
+
+          echo "Validating APKs"
+          for abi in universal arm64-v8a armeabi-v7a; do
+            if ! test -f "$APK_DIR_PATH/${APK_BASENAME_PREFIX}_$abi.apk"; then
+              files_found="$(ls "$APK_DIR_PATH")"
+              exit_on_error "Failed to find built APK at '$APK_DIR_PATH/${APK_BASENAME_PREFIX}_$abi.apk'. Files found: "$'\n'"$files_found"
+            fi
+          done
+
+          echo "Generating sha256sums file"
+          if ! (cd "$APK_DIR_PATH"; sha256sum \
+            "${APK_BASENAME_PREFIX}_universal.apk" \
+            "${APK_BASENAME_PREFIX}_arm64-v8a.apk" \
+            "${APK_BASENAME_PREFIX}_armeabi-v7a.apk" \
+            > "${APK_BASENAME_PREFIX}_sha256sums"); then
+            exit_on_error "Generate sha256sums failed for '$APK_VERSION_TAG' build."
+          fi
+
+      - name: Attach universal APK file
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APK_BASENAME_PREFIX }}_universal
+          path: |
+            ${{ env.APK_DIR_PATH }}/${{ env.APK_BASENAME_PREFIX }}_universal.apk
+            ${{ env.APK_DIR_PATH }}/output-metadata.json
+
+      - name: Attach arm64-v8a APK file
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APK_BASENAME_PREFIX }}_arm64-v8a
+          path: |
+            ${{ env.APK_DIR_PATH }}/${{ env.APK_BASENAME_PREFIX }}_arm64-v8a.apk
+            ${{ env.APK_DIR_PATH }}/output-metadata.json
+
+      - name: Attach armeabi-v7a APK file
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APK_BASENAME_PREFIX }}_armeabi-v7a
+          path: |
+            ${{ env.APK_DIR_PATH }}/${{ env.APK_BASENAME_PREFIX }}_armeabi-v7a.apk
+            ${{ env.APK_DIR_PATH }}/output-metadata.json
+
+      - name: Attach sha256sums file
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APK_BASENAME_PREFIX }}_sha256sums
+          path: |
+            ${{ env.APK_DIR_PATH }}/${{ env.APK_BASENAME_PREFIX }}_sha256sums
+            ${{ env.APK_DIR_PATH }}/output-metadata.json
+
+  # ---------------------------------------------------------------------
+  # Build debug APKs on release publication and attach them to the release.
+  # ---------------------------------------------------------------------
+  attach-release-apks:
+    name: Attach APKs to release (${{ matrix.package_variant }})
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package_variant: [ apt-android-7, apt-android-5 ]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Build APKs for release
+        id: build
+        shell: bash {0}
+        env:
+          PACKAGE_VARIANT: ${{ matrix.package_variant }}
+        run: |
+          exit_on_error() {
+              echo "$1"
+              exit 1
+          }
+
+          echo "Setting vars"
+          RELEASE_VERSION_NAME="${GITHUB_REF/refs\/tags\//}"
+          if ! printf "%s" "${RELEASE_VERSION_NAME/v/}" | grep -qP '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$'; then
+           exit_on_error "The versionName '${RELEASE_VERSION_NAME/v/}' is not a valid version as per semantic version '2.0.0' spec in the format 'major.minor.patch(-prerelease)(+buildmetadata)'. https://semver.org/spec/v2.0.0.html."
+          fi
+
+          APK_DIR_PATH="./app/build/outputs/apk/debug"
+          APK_VERSION_TAG="$RELEASE_VERSION_NAME+${{ env.PACKAGE_VARIANT }}-github-debug"
+          APK_BASENAME_PREFIX="termux-app_$APK_VERSION_TAG"
+
+          echo "Building APKs for 'APK_VERSION_TAG' release"
+          export TERMUX_APK_VERSION_TAG="$APK_VERSION_TAG"
+          export TERMUX_PACKAGE_VARIANT="${{ env.PACKAGE_VARIANT }}"
+          if ! ./gradlew assembleDebug; then
+            exit_on_error "Build failed for '$APK_VERSION_TAG' release."
+          fi
+
+          echo "Validating APKs"
+          for abi in universal arm64-v8a armeabi-v7a; do
+            if ! test -f "$APK_DIR_PATH/${APK_BASENAME_PREFIX}_$abi.apk"; then
+              files_found="$(ls "$APK_DIR_PATH")"
+              exit_on_error "Failed to find built APK at '$APK_DIR_PATH/${APK_BASENAME_PREFIX}_$abi.apk'. Files found: "$'\n'"$files_found"
+            fi
+          done
+
+          echo "Generating sha256sums file"
+          if ! (cd "$APK_DIR_PATH"; sha256sum \
+            "${APK_BASENAME_PREFIX}_universal.apk" \
+            "${APK_BASENAME_PREFIX}_arm64-v8a.apk" \
+            "${APK_BASENAME_PREFIX}_armeabi-v7a.apk" \
+            > "${APK_BASENAME_PREFIX}_sha256sums"); then
+            exit_on_error "Generate sha256sums failed for '$APK_VERSION_TAG' release."
+          fi
+
+          echo "apk_dir_path=$APK_DIR_PATH" >> $GITHUB_OUTPUT
+          echo "apk_basename_prefix=$APK_BASENAME_PREFIX" >> $GITHUB_OUTPUT
+
+      - name: Attach APKs to GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: |
+            ${{ steps.build.outputs.apk_dir_path }}/${{ steps.build.outputs.apk_basename_prefix }}_universal.apk
+            ${{ steps.build.outputs.apk_dir_path }}/${{ steps.build.outputs.apk_basename_prefix }}_arm64-v8a.apk
+            ${{ steps.build.outputs.apk_dir_path }}/${{ steps.build.outputs.apk_basename_prefix }}_armeabi-v7a.apk
+            ${{ steps.build.outputs.apk_dir_path }}/${{ steps.build.outputs.apk_basename_prefix }}_sha256sums
+
+  # ---------------------------------------------------------------------
+  # Trigger JitPack builds of the termux library modules after a release.
+  # ---------------------------------------------------------------------
+  trigger-jitpack:
+    name: Trigger JitPack library builds
+    if: github.event_name == 'release'
+    needs: attach-release-apks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set vars
+        run: echo "TERMUX_LIB_VERSION=${GITHUB_REF/refs\/tags\/v/}" >> $GITHUB_ENV
+      - name: Echo release
+        run: echo "Triggering termux library builds on jitpack for '$TERMUX_LIB_VERSION' release after waiting for 3 mins"
+      - name: Trigger termux library builds on jitpack
+        run: |
+          sleep 180
+          curl --max-time 600 --no-progress-meter "https://jitpack.io/com/termux/termux-app/terminal-emulator/$TERMUX_LIB_VERSION/terminal-emulator-$TERMUX_LIB_VERSION.pom"
+          curl --max-time 600 --no-progress-meter "https://jitpack.io/com/termux/termux-app/terminal-view/$TERMUX_LIB_VERSION/terminal-view-$TERMUX_LIB_VERSION.pom"
+          curl --max-time 600 --no-progress-meter "https://jitpack.io/com/termux/termux-app/termux-shared/$TERMUX_LIB_VERSION/termux-shared-$TERMUX_LIB_VERSION.pom"
