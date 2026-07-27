@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Test-variant manifest. The unit-test manifest merger
+    (processDebugUnitTestManifest) does not always inherit the
+    tools:overrideLibrary directive from the main AndroidManifest.xml, so we
+    redeclare it here for the test variant. See the main AndroidManifest.xml
+    for the full rationale on why the Shizuku library minSdk values are
+    overridden.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-sdk tools:overrideLibrary="rikka.shizuku.aidl,rikka.shizuku.shared,rikka.shizuku.api,rikka.shizuku.provider" />
+
+</manifest>
